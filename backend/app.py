@@ -7,6 +7,7 @@ import numpy
 import torch.nn as nn
 import math
 import plotly.express as px
+import joblib
 import datetime
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import mean_absolute_error, mean_squared_error
@@ -33,7 +34,7 @@ mdata = load_mdata()
 history = mdata[['Cases', 'Rainfall', 'Temperature', 'RH', 'searches1', 'searches2']].values
 print(history)
 
-scaler = MinMaxScaler()
+scaler=MinMaxScaler()
 history_scaled = scaler.fit_transform(history)
 
 def create_sequences(data, seq_length):
@@ -45,7 +46,7 @@ def create_sequences(data, seq_length):
         ys.append(y)
     return numpy.array(xs), numpy.array(ys)
 
-seq_length = 50
+seq_length = 10
 target_index = mdata.columns.get_loc('Cases')
 X, y = create_sequences(history_scaled, seq_length)
 
@@ -90,12 +91,12 @@ output_size = 6
 dropout = 0.5
 lstm_model = LSTM(input_size, hidden_size, num_layers, output_size, dropout)
 learning_rate = 0.001
-num_epochs = 180
+num_epochs = 100
 
 criterion = nn.MSELoss()
 optimizer = torch.optim.Adam(lstm_model.parameters(), lr=learning_rate)
 
-lstm_model.load_state_dict(torch.load('../dengue/public/model2.pth', weights_only=True))
+lstm_model.load_state_dict(torch.load('../dengue/public/model4.pth', weights_only=True))
 lstm_model.eval()
 print("LSTM model loaded.")
 
@@ -121,24 +122,30 @@ def forecast():
     
     X_full, y_full = create_sequences(history_scaled, seq_length)
     
-    train_size = int(len(y_full) * 0.7)
+    # train_size = int(len(y_full) * 0.7)
     
-    X_test_local = X_full[train_size:]
-    X_test_local = torch.from_numpy(X_test_local).float()
-    X_test_local = X_test_local.reshape(X_test_local.shape[0], seq_length, X_test_local.shape[2])
+    # X_test_local = X_full[train_size:]
+    # X_test_local = torch.from_numpy(X_test_local).float()
+    # X_test_local = X_test_local.reshape(X_test_local.shape[0], seq_length, X_test_local.shape[2])
     
-    historical_data = X_test_local.squeeze().numpy()[-1]
+    # historical_data = X_test_local.squeeze().numpy()[-1]
+    historical_data = X_full[-1].copy()
 
     num_forecast_steps = 30
     forecasted_values = []
+
+    other_values = historical_data[-1, 1:]
     
     with torch.no_grad():
         for _ in range(num_forecast_steps):
             historical_data_tensor = torch.as_tensor(historical_data).float().unsqueeze(0)
             predicted_value = lstm_model(historical_data_tensor).numpy()[0, 0]
-            forecasted_values.append(predicted_value)
             historical_data = numpy.roll(historical_data, shift=-1)
             historical_data[-1] = predicted_value
+            forecasted_values.append(predicted_value)
+
+            # historical_data = numpy.roll(historical_data, shift=-1)
+            # historical_data[-1] = predicted_value
     
     if not pandas.api.types.is_datetime64_any_dtype(mdata.index):
         mdata.index = pandas.to_datetime(mdata.index)
@@ -150,45 +157,76 @@ def forecast():
     target_min = scaler.data_min_[target_index]
     target_max = scaler.data_max_[target_index]
     forecasted_cases = numpy.array(forecasted_values) * (target_max - target_min) + target_min
+
+    print(forecasted_values)
     
     output = [future_dates, forecasted_cases]
     return output
     
 def get_realtime():
+    mdata = load_mdata()
+
     final_realtime = [[], []] # first sublist for searches, second sublist for weather
     recent_date = pandas.to_datetime(mdata.index[-1])
     day_after = recent_date + timedelta(days=1)
     timeframe = f"{recent_date.strftime('%Y-%m-%d')} {day_after.strftime('%Y-%m-%d')}"
 
+    print(day_after)
+
+    print("==========dksjf")
+
     # search trends =======================================================================
     # access data from pytrends
 
-    pytrends = TrendReq(hl = 'en-US', tz = 480)
-    kw_list = ['dengue', 'dengue symptoms']
-    pytrends.build_payload(kw_list, cat = 0, timeframe = timeframe, geo="PH")
+    # pytrends = TrendReq(hl = 'en-US', tz = 480)
+    # kw_list = ['dengue', 'dengue symptoms']
+    # pytrends.build_payload(kw_list, cat = 0, timeframe = timeframe, geo="PH")
 
-    df = pytrends.interest_over_time()
-    df = df.drop(columns=['isPartial'])
+    # df = pytrends.interest_over_time()
+    # df = df.drop(columns=['isPartial'])
+
+    mdata2 = pandas.read_csv('../dengue/public/may19_finalsearches.csv', 
+                        names=['date', 'searches1', 'searches2'], header=0, parse_dates=['date'])
+    mdata2['date'] = pandas.to_datetime(mdata2['date'])
+    mdata2.set_index('date', inplace=True)
 
     output = [[], []]
-    for i in df['dengue']: output[0].append(i)
-    for i in df['dengue symptoms']: output[1].append(i)
+    if (day_after in mdata2.index):
+        output[0] = mdata2.loc[day_after, 'searches1']
+        output[1] = mdata2.loc[day_after, 'searches2']
+    else:
+        print('date not found')
+        output[0] = None
+        output[1] = None
+
+    # for i in mdata['dengue']: output[0].append(i)
+    # for i in mdata['dengue symptoms']: output[1].append(i)
     
     # normalize data acc to historical record
-    historical_s1 = mdata['searches1'].iloc[-1]
-    historical_s2 = mdata['searches2'].iloc[-1]
+    # historical_s1 = mdata['searches1'].iloc[-1]
+    # historical_s2 = mdata['searches2'].iloc[-1]
 
-    final_realtime[0].append(float(historical_s1 * output[1][0] / output[0][0]))
-    final_realtime[0].append(float(historical_s2 * output[1][1] / output[0][1]))
+    final_realtime[0].append(float(0.5714285714 * output[0]))
+    final_realtime[0].append(float(0.4509803922 * output[1]))
 
     # weather ==============================================================================
 
     station_id = 98430
     hourly_data = Hourly(station_id, pandas.to_datetime(str(recent_date) + " 00:00:00"),
                           pandas.to_datetime(str(day_after) + " 00:00:00")).fetch()
-    final_realtime[1].append(float(hourly_data['temp'].iloc[-1]))
-    final_realtime[1].append(float(hourly_data['rhum'].iloc[-1]))
-    final_realtime[1].append(float(hourly_data['prcp'].iloc[-1]))
+    print((hourly_data['prcp'].iloc[-1]).dtype)
+    if (pandas.isna(hourly_data['temp'].iloc[-1])):
+        final_realtime[1].append(0.0)    
+    else:
+        final_realtime[1].append(float(hourly_data['temp'].iloc[-1]))
+    if (pandas.isna(hourly_data['rhum'].iloc[-1])):
+        final_realtime[1].append(0.0)
+    else:
+        final_realtime[1].append(float(hourly_data['rhum'].iloc[-1]))
+    if (pandas.isna(hourly_data['prcp'].iloc[-1])):
+        final_realtime[1].append(0.0)
+    else:
+        final_realtime[1].append(float(hourly_data['prcp'].iloc[-1]))
 
     final_realtime.append(day_after)
 
@@ -201,9 +239,10 @@ def home():
 
 @app.route('/update')
 def update():
+    mdata = load_mdata()
+
     realtime = get_realtime()
     recent_data = pandas.read_csv('../dengue/public/recent_data.csv', names=['date', 'Cases'], header=0)
-    global mdata
     if mdata.index.name == "date": mdata = mdata.reset_index()
     new_data = pandas.DataFrame({
         "date": [realtime[2]],
@@ -214,6 +253,8 @@ def update():
         "searches1": [realtime[0][0]],
          "searches2": [realtime[0][1]]
     })
+
+    # print(new_data)
 
     mdata_new = pandas.concat([mdata, new_data], ignore_index=True)
     try:
@@ -234,10 +275,10 @@ def predict():
         return jsonify({"error": "Request must be JSON"}), 415
     
     try:
-        data = request.get_json()
-        input_features = numpy.array(data['features'], dtype=numpy.float32).reshape(1, 30, 6)
-        input_tensor = torch.from_numpy(input_features).float()
-        input_tensor = input_tensor[:, :-1, :]
+        # data = request.get_json()
+        # input_features = numpy.array(data['features'], dtype=numpy.float32).reshape(1, 30, 6)
+        # input_tensor = torch.from_numpy(input_features).float()
+        # input_tensor = input_tensor[:, :-1, :]
         
         with torch.no_grad():
             prediction = forecast()

@@ -137,7 +137,7 @@ export default function Page() {
 
   const fetchRealTimeData = () => {
     if (csvData.length > 0) {
-      const lastRow = csvData[csvData.length - 1]
+      const lastRow = csvData[csvData.length - 2]
       console.log("Last row of CSV data:", lastRow)
       return lastRow
     } else {
