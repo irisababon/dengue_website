@@ -7,8 +7,8 @@ import numpy
 import torch.nn as nn
 import math
 import plotly.express as px
-import joblib
 import datetime
+import statistics
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 from statsmodels.tsa.seasonal import seasonal_decompose
@@ -17,15 +17,19 @@ from statsmodels.tsa.holtwinters import ExponentialSmoothing
 from pytrends.request import TrendReq
 from datetime import timedelta
 from meteostat import Hourly, Daily, Stations
+import torchvision.models as models
 
 dateNow = datetime.datetime.now()
 
 app = Flask(__name__)
 CORS(app)
 
+# ================================================================================================================================================================
+# data processing, loading data from csv
+
 def load_mdata():
     column_names = ['date','Cases','Rainfall','Temperature','RH','searches1','searches2']
-    mdata = pandas.read_csv('../dengue/public/websiteSmooth.csv', names=column_names, header=0)
+    mdata = pandas.read_csv('../dengue/public/website2025Smooth.csv', names=column_names, header=0)
     mdata['date'] = pandas.to_datetime(mdata['date'])
     mdata.set_index('date', inplace=True)
     return mdata
@@ -37,6 +41,7 @@ print(history)
 scaler=MinMaxScaler()
 history_scaled = scaler.fit_transform(history)
 
+# sequence creation
 def create_sequences(data, seq_length):
     xs, ys = [], []
     for i in range(len(data) - seq_length):
@@ -50,6 +55,7 @@ seq_length = 10
 target_index = mdata.columns.get_loc('Cases')
 X, y = create_sequences(history_scaled, seq_length)
 
+# train/test split
 train_size = int(len(y) * 0.7)
 X_train, X_test = X[:train_size], X[train_size:]
 y_train, y_test = y[:train_size], y[train_size:]
@@ -62,6 +68,9 @@ y_test = torch.from_numpy(y_test).float()
 X_train = X_train.reshape(X_train.shape[0], seq_length, X_train.shape[2]) 
 X_test = X_test.reshape(X_test.shape[0], seq_length, X_test.shape[2])
 
+# ================================================================================================================================================================
+# lstm definition
+
 class LSTM(nn.Module):
     def __init__(self, input_size, hidden_size, num_layers, output_size, dropout):
         super(LSTM, self).__init__()
@@ -72,10 +81,7 @@ class LSTM(nn.Module):
         self.dropout = dropout
 
     def forward(self, x):
-        if self.training:
-            self.dropout_layer = nn.Dropout(self.dropout)
-        else:
-            self.dropout_layer = nn.Identity()
+        self.dropout_layer = nn.Dropout(self.dropout)
         h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size)
         c0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size)
         
@@ -89,29 +95,26 @@ hidden_size = 64
 num_layers = 2
 output_size = 6
 dropout = 0.5
-lstm_model = LSTM(input_size, hidden_size, num_layers, output_size, dropout)
-learning_rate = 0.001
+learning_rate = 0.01
 num_epochs = 100
 
-criterion = nn.MSELoss()
+lstm_model = (torch.load('../dengue/public/models/oct9.pth', weights_only=False))
 optimizer = torch.optim.Adam(lstm_model.parameters(), lr=learning_rate)
-
-lstm_model.load_state_dict(torch.load('../dengue/public/model4.pth', weights_only=True))
 lstm_model.eval()
 print("LSTM model loaded.")
 
 with torch.no_grad():
-    train_outputs = lstm_model(X_train).squeeze().numpy()
-    test_outputs = lstm_model(X_test).squeeze().numpy()
+    test_outputs_cases = lstm_model(X_test).squeeze()[:, 0].numpy()
+    y_test_cases = y_test[:, 0].numpy()
 
 with torch.no_grad():
-    train_outputs = lstm_model(X_train).squeeze()
-    test_outputs = lstm_model(X_test).squeeze()
-    train_outputs_cases = train_outputs[:, 0].numpy()
-    test_outputs_cases = test_outputs[:, 0].numpy()
+    train_outputs = lstm_model(X_train).squeeze().numpy()
+    test_outputs = lstm_model(X_test).squeeze().numpy()
+    train_outputs_cases = train_outputs[:, 0]
+    test_outputs_cases = test_outputs[:, 0]
 
-test_outputs_cases_reshaped = test_outputs_cases.reshape(-1, 1)
-lstm_predictions = scaler.inverse_transform(numpy.hstack([test_outputs_cases_reshaped, numpy.zeros((test_outputs_cases_reshaped.shape[0], 5))]))[:, 0]
+all_outputs = numpy.concatenate((train_outputs_cases, test_outputs_cases))
+test_start_index = len(history_scaled) - len(y_test) - seq_length
 
 def forecast():
     mdata = load_mdata()
@@ -121,14 +124,7 @@ def forecast():
     history_scaled = scaler.fit_transform(history)
     
     X_full, y_full = create_sequences(history_scaled, seq_length)
-    
-    # train_size = int(len(y_full) * 0.7)
-    
-    # X_test_local = X_full[train_size:]
-    # X_test_local = torch.from_numpy(X_test_local).float()
-    # X_test_local = X_test_local.reshape(X_test_local.shape[0], seq_length, X_test_local.shape[2])
-    
-    # historical_data = X_test_local.squeeze().numpy()[-1]
+
     historical_data = X_full[-1].copy()
 
     num_forecast_steps = 30
@@ -138,21 +134,25 @@ def forecast():
     
     with torch.no_grad():
         for _ in range(num_forecast_steps):
+
             historical_data_tensor = torch.as_tensor(historical_data).float().unsqueeze(0)
             predicted_value = lstm_model(historical_data_tensor).numpy()[0, 0]
+            forecasted_values.append(predicted_value)
             historical_data = numpy.roll(historical_data, shift=-1)
             historical_data[-1] = predicted_value
-            forecasted_values.append(predicted_value)
-
-            # historical_data = numpy.roll(historical_data, shift=-1)
-            # historical_data[-1] = predicted_value
     
     if not pandas.api.types.is_datetime64_any_dtype(mdata.index):
         mdata.index = pandas.to_datetime(mdata.index)
         
     last_date = mdata.index[-1]
+    print(last_date)
     future_dates = pandas.date_range(start=last_date + timedelta(days=1), periods=num_forecast_steps)
-    
+
+    history_scaled_cases = history_scaled[:, 0]
+
+    test_outputs_cases_reshaped = test_outputs_cases.reshape(-1, 1)
+    lstm_predictions = scaler.inverse_transform(numpy.hstack([test_outputs_cases_reshaped, numpy.zeros((test_outputs_cases_reshaped.shape[0], 5))]))[:, 0]
+
     target_index = mdata.columns.get_loc('Cases')
     target_min = scaler.data_min_[target_index]
     target_max = scaler.data_max_[target_index]
@@ -173,10 +173,8 @@ def get_realtime():
 
     print(day_after)
 
-    print("==========dksjf")
-
     # search trends =======================================================================
-    # access data from pytrends
+    # access data from pytrends (has since been deprecated)
 
     # pytrends = TrendReq(hl = 'en-US', tz = 480)
     # kw_list = ['dengue', 'dengue symptoms']
@@ -254,14 +252,12 @@ def update():
          "searches2": [realtime[0][1]]
     })
 
-    # print(new_data)
-
     mdata_new = pandas.concat([mdata, new_data], ignore_index=True)
     try:
         mdata_new["date"] = mdata_new["date"].dt.date
     except AttributeError:
         mdata_new["date"] = pandas.to_datetime(mdata_new["date"]).dt.date
-    mdata_new.to_csv("../dengue/public/websiteSmooth.csv", index=False)
+    mdata_new.to_csv("../dengue/public/website2025Smooth.csv", index=False)
 
     response = jsonify({"status": "Update successful"})
     response.headers.add("Access-Control-Allow-Origin", "*")
@@ -275,11 +271,6 @@ def predict():
         return jsonify({"error": "Request must be JSON"}), 415
     
     try:
-        # data = request.get_json()
-        # input_features = numpy.array(data['features'], dtype=numpy.float32).reshape(1, 30, 6)
-        # input_tensor = torch.from_numpy(input_features).float()
-        # input_tensor = input_tensor[:, :-1, :]
-        
         with torch.no_grad():
             prediction = forecast()
             print(prediction)
@@ -304,7 +295,10 @@ def predict():
         
         print(output1)
         print(output2)
-        return jsonify({'prediction': [output1, output2]})
+        output3 = (sum(output2) / len(output2)) + 2 * int(statistics.stdev(output2))
+
+
+        return jsonify({'prediction': [output1, output2, output3]})
     except Exception as e:
         return jsonify({"error": str(e)}), 400 
 

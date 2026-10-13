@@ -7,6 +7,7 @@ import Link from 'next/link'
 import Image from 'next/image'
 import Papa, { ParseResult } from 'papaparse'
 import { Line, Bar } from 'react-chartjs-2'
+import annotationPlugin from 'chartjs-plugin-annotation';
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -40,7 +41,8 @@ ChartJS.register(
     BarElement,
     Title,
     Tooltip,
-    Legend
+    Legend,
+    annotationPlugin
 );
 
 export default function Page() {
@@ -97,6 +99,8 @@ export default function Page() {
       })
   }, [])
 
+  const [threshold, setThreshold] = useState<number | null>(null);
+
   const fetchPrediction = async () => {
     if (featuresNested.length !== 30 || featuresNested.some(row => row.length !== 6)) {
       console.error('Features data is incomplete or malformed. Expected a 30x6 array, got', featuresNested)
@@ -112,7 +116,11 @@ export default function Page() {
       })
       const data = await response.json()
       console.log("Flask Response:", data);
-      setPrediction(Array.isArray(data.prediction) ? data.prediction : [])
+      setPrediction(Array.isArray(data.prediction) ? data.prediction : []);
+      if (data.threshold) {
+        setThreshold(data.threshold);
+      }
+
       
     } catch (error) {
       console.error('Error fetching prediction:', error)
@@ -155,7 +163,7 @@ export default function Page() {
     }
   }, [isGraphLoaded]) // Only run when graph is loaded
 
-  const LineGraph = ({ prediction }: { prediction: number[] }) => {
+  const LineGraph = ({ prediction, threshold }: { prediction: number[], threshold: number }) => {
     if (
       !Array.isArray(prediction[0]) ||
       !Array.isArray(prediction[1]) ||
@@ -170,47 +178,68 @@ export default function Page() {
         {
           label: 'Predicted Cases',
           data: prediction[1], // Values
-          borderColor: 'rgb(75, 192, 192)',
-          backgroundColor: 'rgba(75, 192, 192, 0.2)',
+          borderColor: 'rgba(99, 228, 0, 1)',
+          backgroundColor: 'rgba(116, 192, 75, 0.2)',
           tension: 0.15,
+          pointBackgroundColor: prediction[1].map(v =>
+          threshold && v > threshold ? 'red' : 'rgb(75, 192, 192)'
+        ),
+
         },
         {
           label: 'Actual Cases',
           data: [1,9,19,20,25,47,52,43,52,50,51,30,55,66,50,56,46,31,21,38,42,41,58,22,16,12,3],
-          borderColor: 'rgb(255, 99, 132)',
-          backgroundColor: 'rgba(255, 99, 132, 0.2)',
+          borderColor: 'rgba(38, 157, 255, 1)',
+          backgroundColor: 'rgba(99, 128, 255, 0.2)',
           tension: 0.15,
         },
       ],
     }
   
     const options = {
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: {
-        title: {
-          display: true,
-          text: 'Prediction for Dengue Cases',
-          font: {
-            size: 18,
-            weight: 'normal', 
-            family: 'Poppins, sans-serif',
-          },
-          padding: {
-            top: 20,
-            bottom: 0,
-          },
-        },
-        legend: { 
-            position: 'top' as const 
-        },
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      title: {
+        display: true,
+        text: 'Prediction for Dengue Cases',
+        font: { size: 18, weight: 'normal', family: 'Poppins, sans-serif' },
+        padding: { top: 20, bottom: 0 },
       },
-      scales: {
-        y: {
-          beginAtZero: true,
-        }
-      }
-    }
+      legend: { position: 'top' as const },
+      annotation: threshold
+        ? {
+            annotations: {
+              thresholdLine: {
+                type: 'line',
+                yMin: threshold,
+                yMax: threshold,
+                borderColor: 'red',
+                borderWidth: 2,
+                label: {
+                  enabled: true,
+                  content: `Threshold: ${threshold}`,
+                  position: 'end',
+                  backgroundColor: 'rgba(255,0,0,0.7)',
+                  color: '#fff',
+                },
+              },
+              box1: {
+                type: 'box',
+                xMin: 0,
+                xMax: 100,
+                yMin: threshold,
+                yMax: threshold+30,
+                backgroundColor: 'rgba(255, 99, 132, 0.25)'
+              },
+            },
+          }
+        : {},
+    },
+    scales: {
+      y: { beginAtZero: true },
+    },
+  };
     
     useEffect(() => {
       setIsGraphLoaded(true)
@@ -232,7 +261,7 @@ export default function Page() {
     const dataValues = [
         parseFloat(realTimeData[5]).toFixed(0), // Get and format the value for the first bar
         parseFloat(realTimeData[6]).toFixed(0), // Get and format the value for the second bar
-        // You can add more values as necessary for other bars
+        // Add more values as necessary for other bars
     ];
 
     // Data for the bar graph
@@ -392,7 +421,7 @@ export default function Page() {
                 )} */}
               </div>
                 <div className = "w-full w-3xl h-[450px]">
-                  <LineGraph aria-live="Dengue forecast" prediction = {prediction}></LineGraph>
+                  <LineGraph aria-live="Dengue forecast" prediction = {prediction} threshold={prediction[2]}></LineGraph>
                 </div>
           </div>
 

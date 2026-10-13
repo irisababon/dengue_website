@@ -11,7 +11,7 @@ def fetch_and_cache():
         header=0
     )
     global mdata
-    mdata = pandas.read_csv('../dengue/public/websiteSmooth.csv')
+    mdata = pandas.read_csv('../dengue/public/website2025Smooth.csv')
     if mdata.index.name == "date":
         mdata = mdata.reset_index()
 
@@ -29,7 +29,7 @@ def fetch_and_cache():
         mdata_new["date"] = mdata_new["date"].dt.date
     except AttributeError:
         mdata_new["date"] = pandas.to_datetime(mdata_new["date"]).dt.date
-    mdata_new.to_csv('../dengue/public/websiteSmooth.csv', index=False)
+    mdata_new.to_csv('../dengue/public/website2025Smooth.csv', index=False)
 
     # 3. Cache only the new row
     cache = {
